@@ -7,6 +7,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Generate project
         run: |
+          mkdir -p $(dirname gradle.properties)
+          cat > gradle.properties <<'EOF_FILE'
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          org.gradle.jvmargs=-Xmx2048m
+          EOF_FILE
           mkdir -p $(dirname settings.gradle.kts)
           cat > settings.gradle.kts <<'EOF_FILE'
           pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
@@ -231,7 +237,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
-      - run: gradle assembleDebug
+      - run: gradle assembleDebug --stacktrace
       - uses: actions/upload-artifact@v4
         with:
           name: app-debug
