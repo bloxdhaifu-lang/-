@@ -1,0 +1,238 @@
+name: Build APK
+on: [workflow_dispatch, push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate project
+        run: |
+          mkdir -p $(dirname settings.gradle.kts)
+          cat > settings.gradle.kts <<'EOF_FILE'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "FullscreenBrowser"
+          include(":app")
+          EOF_FILE
+          mkdir -p $(dirname build.gradle.kts)
+          cat > build.gradle.kts <<'EOF_FILE'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF_FILE
+          mkdir -p $(dirname app/build.gradle.kts)
+          cat > app/build.gradle.kts <<'EOF_FILE'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.example.fsbrowser"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.example.fsbrowser"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          dependencies {
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.appcompat:appcompat:1.7.0")
+          }
+          EOF_FILE
+          mkdir -p $(dirname app/src/main/AndroidManifest.xml)
+          cat > app/src/main/AndroidManifest.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <application
+                  android:label="FS Browser"
+                  android:usesCleartextTraffic="true"
+                  android:theme="@style/AppTheme">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF_FILE
+          mkdir -p $(dirname app/src/main/res/values/themes.xml)
+          cat > app/src/main/res/values/themes.xml <<'EOF_FILE'
+          <resources>
+              <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
+                  <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+              </style>
+          </resources>
+          EOF_FILE
+          mkdir -p $(dirname app/src/main/java/com/example/fsbrowser/MainActivity.kt)
+          cat > app/src/main/java/com/example/fsbrowser/MainActivity.kt <<'EOF_FILE'
+          package com.example.fsbrowser
+
+          import android.annotation.SuppressLint
+          import android.graphics.Color
+          import android.os.Bundle
+          import android.view.Gravity
+          import android.view.View
+          import android.view.ViewGroup
+          import android.view.inputmethod.EditorInfo
+          import android.webkit.WebChromeClient
+          import android.webkit.WebView
+          import android.webkit.WebViewClient
+          import android.widget.Button
+          import android.widget.EditText
+          import android.widget.FrameLayout
+          import android.widget.LinearLayout
+          import androidx.activity.OnBackPressedCallback
+          import androidx.appcompat.app.AppCompatActivity
+          import androidx.core.view.WindowCompat
+          import androidx.core.view.WindowInsetsCompat
+          import androidx.core.view.WindowInsetsControllerCompat
+
+          class MainActivity : AppCompatActivity() {
+              private lateinit var web: WebView
+              private lateinit var bar: LinearLayout
+              private lateinit var exitBtn: Button
+              private lateinit var root: FrameLayout
+              private lateinit var urlBox: EditText
+              private var customView: View? = null
+              private var customCb: WebChromeClient.CustomViewCallback? = null
+              private var manualFullscreen = false
+
+              @SuppressLint("SetJavaScriptEnabled")
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  val mp = ViewGroup.LayoutParams.MATCH_PARENT
+                  val wc = ViewGroup.LayoutParams.WRAP_CONTENT
+
+                  urlBox = EditText(this).apply {
+                      setSingleLine()
+                      hint = "URLまたは検索ワード"
+                      imeOptions = EditorInfo.IME_ACTION_GO
+                      layoutParams = LinearLayout.LayoutParams(0, wc, 1f)
+                      setOnEditorActionListener { _, _, _ -> go(text.toString()); true }
+                  }
+                  val goBtn = Button(this).apply { text = "移動"; setOnClickListener { go(urlBox.text.toString()) } }
+                  val fsBtn = Button(this).apply { text = "全画面"; setOnClickListener { manualFullscreen = true; applyFullscreen(true) } }
+                  bar = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      addView(urlBox); addView(goBtn); addView(fsBtn)
+                  }
+
+                  web = WebView(this).apply {
+                      settings.javaScriptEnabled = true
+                      settings.domStorageEnabled = true
+                      settings.mediaPlaybackRequiresUserGesture = false
+                      webViewClient = object : WebViewClient() {
+                          override fun onPageFinished(v: WebView, url: String) { urlBox.setText(url) }
+                      }
+                      webChromeClient = object : WebChromeClient() {
+                          override fun onShowCustomView(view: View, cb: CustomViewCallback) {
+                              customView = view; customCb = cb
+                              root.addView(view, FrameLayout.LayoutParams(mp, mp))
+                              applyFullscreen(true)
+                          }
+                          override fun onHideCustomView() {
+                              customView?.let { root.removeView(it) }
+                              customCb?.onCustomViewHidden()
+                              customView = null; customCb = null
+                              applyFullscreen(manualFullscreen)
+                          }
+                      }
+                  }
+
+                  val column = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      addView(bar, LinearLayout.LayoutParams(mp, wc))
+                      addView(web, LinearLayout.LayoutParams(mp, 0, 1f))
+                  }
+
+                  exitBtn = Button(this).apply {
+                      text = "✕"
+                      alpha = 0.5f
+                      visibility = View.GONE
+                      setTextColor(Color.WHITE)
+                      setBackgroundColor(Color.parseColor("#66000000"))
+                      setOnClickListener {
+                          manualFullscreen = false
+                          if (customView != null) web.webChromeClient?.onHideCustomView()
+                          else applyFullscreen(false)
+                      }
+                  }
+
+                  root = FrameLayout(this).apply {
+                      addView(column, FrameLayout.LayoutParams(mp, mp))
+                      addView(exitBtn, FrameLayout.LayoutParams(wc, wc, Gravity.TOP or Gravity.END).apply { setMargins(0, 80, 16, 0) })
+                  }
+                  setContentView(root)
+
+                  onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+                      override fun handleOnBackPressed() {
+                          when {
+                              customView != null -> web.webChromeClient?.onHideCustomView()
+                              manualFullscreen -> { manualFullscreen = false; applyFullscreen(false) }
+                              web.canGoBack() -> web.goBack()
+                              else -> finish()
+                          }
+                      }
+                  })
+
+                  go("https://www.google.com")
+              }
+
+              private fun go(input: String) {
+                  val s = input.trim()
+                  if (s.isEmpty()) return
+                  val url = when {
+                      s.startsWith("http://") || s.startsWith("https://") -> s
+                      s.contains(".") && !s.contains(" ") -> "https://$s"
+                      else -> "https://www.google.com/search?q=" + java.net.URLEncoder.encode(s, "UTF-8")
+                  }
+                  web.loadUrl(url)
+                  urlBox.clearFocus()
+              }
+
+              private fun applyFullscreen(on: Boolean) {
+                  WindowCompat.setDecorFitsSystemWindows(window, !on)
+                  val c = WindowInsetsControllerCompat(window, window.decorView)
+                  if (on) {
+                      c.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                      c.hide(WindowInsetsCompat.Type.systemBars())
+                  } else {
+                      c.show(WindowInsetsCompat.Type.systemBars())
+                  }
+                  bar.visibility = if (on) View.GONE else View.VISIBLE
+                  exitBtn.visibility = if (on && customView == null) View.VISIBLE else View.GONE
+              }
+
+              override fun onWindowFocusChanged(hasFocus: Boolean) {
+                  super.onWindowFocusChanged(hasFocus)
+                  if (hasFocus && (manualFullscreen || customView != null)) applyFullscreen(true)
+              }
+          }
+          EOF_FILE
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+      - run: gradle assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
